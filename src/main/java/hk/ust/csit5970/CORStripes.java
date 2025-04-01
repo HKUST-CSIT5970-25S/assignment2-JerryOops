@@ -30,9 +30,13 @@ public class CORStripes extends Configured implements Tool {
 
 	/*
 	 * TODO: write your first-pass Mapper here.
+
 	 */
 	private static class CORMapper1 extends
 			Mapper<LongWritable, Text, Text, IntWritable> {
+
+		private final static IntWritable ONE = new IntWritable(1);
+		private final static Text WORD = new Text();
 		@Override
 		public void map(LongWritable key, Text value, Context context)
 				throws IOException, InterruptedException {
@@ -43,6 +47,13 @@ public class CORStripes extends Configured implements Tool {
 			/*
 			 * TODO: Your implementation goes here.
 			 */
+			while (doc_tokenizer.hasMoreTokens()) {
+				String token = doc_tokenizer.nextToken();
+				if (token.length() > 0) {
+					WORD.set(token);
+					context.write(WORD, ONE);
+				}
+			}
 		}
 	}
 
@@ -51,11 +62,19 @@ public class CORStripes extends Configured implements Tool {
 	 */
 	private static class CORReducer1 extends
 			Reducer<Text, IntWritable, Text, IntWritable> {
+
+		private final static IntWritable TOTAL = new IntWritable();
 		@Override
 		public void reduce(Text key, Iterable<IntWritable> values, Context context) throws IOException, InterruptedException {
 			/*
 			 * TODO: Your implementation goes here.
 			 */
+			int sum = 0;
+			for (IntWritable value : values) {
+				sum += value.get();
+			}
+			TOTAL.set(sum);
+			context.write(key, TOTAL);
 		}
 	}
 
@@ -63,19 +82,47 @@ public class CORStripes extends Configured implements Tool {
 	 * TODO: Write your second-pass Mapper here.
 	 */
 	public static class CORStripesMapper2 extends Mapper<LongWritable, Text, Text, MapWritable> {
+
+
+		private final static Text WORD = new Text();
+		private final static Text NEXT_WORD = new Text();
+		private final static IntWritable ONE = new IntWritable(1);
 		@Override
 		protected void map(LongWritable key, Text value, Context context) throws IOException, InterruptedException {
 			Set<String> sorted_word_set = new TreeSet<String>();
 			// Please use this tokenizer! DO NOT implement a tokenizer by yourself!
-			String doc_clean = value.toString().replaceAll("[^a-z A-Z]", " ");
-			StringTokenizer doc_tokenizers = new StringTokenizer(doc_clean);
-			while (doc_tokenizers.hasMoreTokens()) {
-				sorted_word_set.add(doc_tokenizers.nextToken());
+			String docClean = value.toString().replaceAll("[^a-z A-Z]", " ");
+			StringTokenizer docTokenizers = new StringTokenizer(docClean);
+			while (docTokenizers.hasMoreTokens()) {
+				String token = docTokenizers.nextToken();
+				if (token.length() > 0) {
+					sorted_word_set.add(token);
+				}
 			}
-			/*
-			 * TODO: Your implementation goes here.
-			 */
+			List<String> wordList = new ArrayList<String>(sorted_word_set);
+			MapWritable stripes = new MapWritable();
+
+			for (int i = 0; i < wordList.size(); i++) {
+				for (int j = i + 1; j < wordList.size(); j++) {
+					String wordA = wordList.get(i);
+					String wordB = wordList.get(j);
+
+					if (wordA.compareTo(wordB) < 0) {
+						WORD.set(wordA);
+						NEXT_WORD.set(wordB);
+					} else {
+						WORD.set(wordB);
+						NEXT_WORD.set(wordA);
+					}
+
+					stripes.clear();
+					stripes.put(NEXT_WORD, ONE);
+					context.write(WORD, stripes);
+				}
+			}
 		}
+
+
 	}
 
 	/*
@@ -83,12 +130,29 @@ public class CORStripes extends Configured implements Tool {
 	 */
 	public static class CORStripesCombiner2 extends Reducer<Text, MapWritable, Text, MapWritable> {
 		static IntWritable ZERO = new IntWritable(0);
+		private final static MapWritable COMBINED_STRIPES = new MapWritable();
+		private final static IntWritable COUNT = new IntWritable();
 
 		@Override
 		protected void reduce(Text key, Iterable<MapWritable> values, Context context) throws IOException, InterruptedException {
-			/*
-			 * TODO: Your implementation goes here.
-			 */
+
+			COMBINED_STRIPES.clear();
+			for (MapWritable stripe : values) {
+				for (Writable k : stripe.keySet()) {
+					Text nextWord = (Text) k;
+					IntWritable count = (IntWritable)stripe.get(nextWord);
+
+					if (COMBINED_STRIPES.containsKey(nextWord)) {
+						IntWritable existingCount = (IntWritable) COMBINED_STRIPES.get(nextWord);
+						COUNT.set(existingCount.get() + count.get());
+						COMBINED_STRIPES.put(nextWord, COUNT);
+					} else {
+						COMBINED_STRIPES.put(nextWord, count);
+					}
+				}
+			}
+			context.write(key, COMBINED_STRIPES);
+
 		}
 	}
 
@@ -96,8 +160,10 @@ public class CORStripes extends Configured implements Tool {
 	 * TODO: Write your second-pass Reducer here.
 	 */
 	public static class CORStripesReducer2 extends Reducer<Text, MapWritable, PairOfStrings, DoubleWritable> {
-		private static Map<String, Integer> word_total_map = new HashMap<String, Integer>();
-		private static IntWritable ZERO = new IntWritable(0);
+		private static Map<String, Integer> WORD_TOTAL = new HashMap<String, Integer>();
+		private final static PairOfStrings BIAGRAM = new PairOfStrings();
+		private final static DoubleWritable RELATIVE_FREQUENCY = new DoubleWritable();
+
 
 		/*
 		 * Preload the middle result file.
@@ -123,7 +189,7 @@ public class CORStripes extends Configured implements Tool {
 				String[] line_terms;
 				while (line != null) {
 					line_terms = line.split("\t");
-					word_total_map.put(line_terms[0], Integer.valueOf(line_terms[1]));
+					WORD_TOTAL.put(line_terms[0], Integer.valueOf(line_terms[1]));
 					LOG.info("read one line!");
 					line = reader.readLine();
 				}
@@ -139,9 +205,47 @@ public class CORStripes extends Configured implements Tool {
 		 */
 		@Override
 		protected void reduce(Text key, Iterable<MapWritable> values, Context context) throws IOException, InterruptedException {
-			/*
-			 * TODO: Your implementation goes here.
-			 */
+			MapWritable combinedStripe = new MapWritable();
+
+			for (MapWritable stripe : values) {
+				for (Writable k : stripe.keySet()) {
+					Text nextWord = (Text)k;
+					IntWritable count = (IntWritable)stripe.get(nextWord);
+					if (combinedStripe.containsKey(nextWord)) {
+						IntWritable existingCount = (IntWritable)combinedStripe.get(nextWord);
+						IntWritable newCount = new IntWritable(existingCount.get() + count.get());
+						combinedStripe.put(nextWord, newCount);
+					} else {
+						combinedStripe.put(nextWord, count);
+					}
+				}
+			}
+
+			String word1 = key.toString();
+			if (WORD_TOTAL.containsKey(word1)) {
+				int word1Total = WORD_TOTAL.get(word1);
+
+				for (Writable k : combinedStripe.keySet()) {
+					Text nextWordText = (Text)k;
+					String word2 = nextWordText.toString();
+
+					if (word1.compareTo(word2) < 0) {
+						BIAGRAM.set(word1, word2);
+					} else {
+						BIAGRAM.set(word2, word1);
+					}
+
+					IntWritable countWritable = (IntWritable)combinedStripe.get(nextWordText);
+					int freqAB = countWritable.get();
+
+					if (WORD_TOTAL.containsKey(word2)) {
+						int word2Total = WORD_TOTAL.get(word2);
+						double cor = (double) freqAB / (word1Total * word2Total);
+						RELATIVE_FREQUENCY.set(cor);
+						context.write(BIAGRAM, RELATIVE_FREQUENCY);
+					}
+				}
+			}
 		}
 	}
 
